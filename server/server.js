@@ -1,5 +1,35 @@
 // TODO - Change to SQLite
-var activeUsers = []
+
+import { Database } from "bun:sqlite";
+const db = new Database(":memory:");
+// const db = new Database("db.sqlite");
+
+var userTable = db.query(`CREATE TABLE users(
+    ID INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT
+)`)
+
+var positionTable = db.query(`CREATE TABLE positions(
+    ID INTEGER PRIMARY KEY AUTOINCREMENT,
+    userID INTEGER,
+    posX REAL,
+    posY REAL,
+    posZ REAL,
+    facingX REAL DEFAULT 0,
+    facingY REAL DEFAULT 0,
+    facingZ REAL DEFAULT 0,
+    isMoving BOOLEAN DEFAULT 0, 
+    movingX REAL DEFAULT 0,
+    movingY REAL DEFAULT 0,
+    movingZ REAL DEFAULT 0,
+    FOREIGN KEY (userID) REFERENCES users(ID)
+)`)
+
+userTable.run()
+positionTable.run()
+
+// Character creation selected clothing customisation table
+
 
 // currentPlayers fields
 // coords
@@ -37,36 +67,40 @@ const server = Bun.serve({
                 case "auth":
                     if(ws.data.name) return;
 
-                    console.log(data.data, data.data.username)
-                    if(activeUsers.includes(data.data.username)) {
+                    var doesExist = db.query(`SELECT * FROM users WHERE username=${data.data.username}`)
+                    var res = doesExist.get()
+                    if(res) {
                         ws.send(JSON.stringify({
                             "type": "authResponse",
                             "success": false
                         }))
                         break
                     }
-
-                    
-                    ws.subscribe("room")
-
-                    
                     ws.send(JSON.stringify({
                         "type": "authResponse",
                         "success": true
                     }))
-                    activeUsers.forEach(user => {
+                    ws.subscribe("room")
+                    ws.data.name = data.data.username
+
+                    var existingUsersPos = db.query(`
+                        SELECT users.username, positions.posX, positions.posY, positions.posZ
+                        FROM users LEFT JOIN positions ON users.ID = positions.userID
+                    `)
+                    var res = existingUsersPos.all()
+                    res.forEach(user => {
                         ws.send(JSON.stringify({
                             type: "initPlayer",
                             data: {
-                                username: user,
-                                position: data.data.position
+                                username: user.username,
+                                position: {
+                                    x: user.posX,
+                                    y: user.posY,
+                                    z: user.posZ,
+                                }
                             }
                         }))
                     })
-
-
-                    ws.data.name = data.data.username
-                    activeUsers.push(ws.data.name)
 
                     ws.publish("room", JSON.stringify({
                         type: "initPlayer",
@@ -75,6 +109,16 @@ const server = Bun.serve({
                             position: data.data.position,
                         }
                     }))
+                    var insertUser = db.query(`INSERT INTO users(username) VALUES (${ws.data.name})`)
+                    var insertPosition = db.query(`INSERT INTO positions(userID, posX, posY, posZ) VALUES (
+                        (SELECT ID FROM users WHERE username='${ws.data.name}'),
+                        ${data.data.position.x},
+                        ${data.data.position.y},
+                        ${data.data.position.z}
+                    )`)
+                    insertUser.run()
+                    insertPosition.run()
+
                     console.log(`${ws.data.name} authenticated`)
                     break;
 
@@ -92,6 +136,18 @@ const server = Bun.serve({
 
                 // TODO
                 case "coords":
+                    var updatePos = db.query(`UPDATE positions SET
+                        posX=${data.data.current.x},
+                        posY=${data.data.current.y},
+                        posZ=${data.data.current.z},
+                        isMoving=${data.data.goingTo.moving == 'true' ? 1 : 0},
+                        movingX=${data.data.goingTo.movingTowards.x},
+                        movingY=${data.data.goingTo.movingTowards.y},
+                        movingZ=${data.data.goingTo.movingTowards.z} 
+                        WHERE userID = (SELECT ID FROM users WHERE username='${ws.data.name}')
+                    `)
+                    updatePos.run()
+
                     ws.publish("room", JSON.stringify({
                         type: "coords",
                         data: {
@@ -101,6 +157,14 @@ const server = Bun.serve({
                     }))
                     break;
                 case "facing":
+                    var updateFacing = db.query(`UPDATE positions SET
+                        facingX=${data.data.x},
+                        facingY=${data.data.y},
+                        facingZ=${data.data.z}
+                        WHERE userID = (SELECT ID FROM users WHERE username='${ws.data.name}')
+                    `)
+                    updateFacing.run()
+
                     ws.publish("room", JSON.stringify({
                         type: "facing",
                         data: {
@@ -118,10 +182,13 @@ const server = Bun.serve({
             }
         },
         close(ws) {
-            activeUsers = activeUsers.filter(e => e !== ws.data.name)
+            var removeUser = db.query(`DELETE FROM users WHERE username = ${ws.data.name}`)
+            removeUser.run()
+
+
             ws.unsubscribe("room")
             ws.publish("room", `${ws.data.name} disconnected`);
-            console.log(`${ws.data.name} disconnected`, activeUsers);
+            console.log(`${ws.data.name} disconnected`);
         }
     },
 });
